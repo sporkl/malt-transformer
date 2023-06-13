@@ -55,18 +55,17 @@
 
 ; (list h n dv) -> (list n (* h dv))
 
-; TODO: figure out concatenation
-
-#| ; append-vectors |#
-#| ; (list x) (list y) -> (list (+ x y)) |#
+; append-vectors
+; (list x) (list y) -> (list (+ x y))
 #| (define append-vectors-1-1 |#
 #|   (lambda (u v) |#
 #|     (let ([lu (tlen u)] |#
 #|           [lv (tlen v)]) |#
 #|       (reshape |#
-#|         (list (+ lu lv)) |#
+#|         (list (+-ρ lu lv)) |#
 #|         (list->tensor (list u v)))))) |#
-#| [[1 2 3 4 5 11 12 13 14 15] [6 7 8 9 10 16 17 18 19 20]] |#
+
+#| (append-vectors-1-1 [tensor 1 2 3 4 5 11 12 13 14 15] [tensor 6 7 8 9 10 16 17 18 19 20]) |#
 
 ; swap the items at position i and j in list l
 (define list-swap
@@ -116,7 +115,8 @@
         (swap-dims-base z i j)))))
 
 ; I believe this is a differentiable version of reshape
-; does using this reshape get things working for flat and nested tensors? looks like it I think
+; does using this reshape get things working for flat and nested tensors? looks like it I think.
+; flat would need to be different because uses a different reshape
 (define d-reshape
   (lambda (s)
     (prim1
@@ -143,10 +143,13 @@
   (lambda (c d)
     (lambda (s)
       (list-remove-index
-        (list-set s d (* (ref s c) (ref s d)))
+        (list-set s d (*-ρ (ref s c) (ref s d)))
         c))))
 
 ; concat
+; this implementation is nice because it is general, but might be too slow
+; in which case a concat-vectors over a list might be better
+; concat-vectors is also probably easier to explain
 (define concat
   (lambda (c d)
     (lambda (t)
