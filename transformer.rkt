@@ -1,7 +1,6 @@
 #lang racket
 
 (require malt)
-(require racket/trace)
 
 ; TODO: looks like batch dim and heads dim are swapped before attention is calculated
 ; might not be an issue, might actually work around potential problem of not concatenating along right dimension
@@ -213,16 +212,18 @@
 (define nlicate-tensor
   (lambda (n)
     (lambda (t)
-      #| (list->tensor (ρ (nlicate-tensor-helper n (ρ t) '()))) |#
-      (list->tensor (nlicate-tensor-helper n t '())))))
+      (let* ([st (shape t)]
+             [wt (reshape (cons 1 st) t)])
+      (nlicate-tensor-helper
+        (sub1 n) wt (concat-n (rank wt)) wt)))))
 
 (define nlicate-tensor-helper
-  (lambda (n t a)
+  (lambda (n t cf a)
     (cond
       [(eqv? n 0) a]
-      [else (nlicate-tensor-helper (sub1 n) t (cons t a))])))
-
-; (tensor (tensor 1 2 3)) (tensor (tensor 4 5 6)) -> (tensor (tensor 1 2 3) (tensor 4 5 6))
+      [else
+        (nlicate-tensor-helper
+          (sub1 n) t cf (cf t a))])))
 
 ; parallel-block
 ; takes in a block and a number h
@@ -265,16 +266,6 @@
         (lambda (theta)
           (+ t (((block-fn b) t) theta))))
       (block-ls b))))
-
-; embedding block
-; (list n N) -> (list n d_model)
-(define embedding-block
-  (lambda (N d_model)
-    (block
-      (lambda (t)
-        (lambda (θ)
-          (dot-product-2-1 (ref θ 0) t)))
-      (list (list d_model N)))))
 
 ; positional encoding block for learned positional encoding
 ; (list n d_model) -> (list n d_model)
@@ -411,7 +402,7 @@
 (define counter-transformer-network
   (stack-blocks
     (list
-      (embedding-block 11 8)
+      (linear-block 11 8)
       (positional-encoding-block 15 8)
       (transformer-block 15 8 2 2 4)
       (transformer-block 15 8 2 2 4)
