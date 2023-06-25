@@ -1,6 +1,14 @@
 #lang racket
 
 (require malt)
+(require racket/trace)
+
+; TODO: looks like batch dim and heads dim are swapped before attention is calculated
+; might not be an issue, might actually work around potential problem of not concatenating along right dimension
+
+; TODO: figure out why flat-tensors is getting in invalid form (where the shape in the representation is a tensor for some reason)
+; it's the same thing for both flat-tensors and nested-tensors: a dual is being passed to a function that can't handle duals
+; issue is that list->tensor expects list of non-dual tensors
 
 ; n = # of words inputted to the model
 ; N = vocabulary size/length of one-hot-vectors which encode words
@@ -31,7 +39,7 @@
   (lambda (m n)
     (lambda (t)
       (let ([m ((mean-matrix m n) t)])
-        (sqrt (mean-matrix (expt (- t m) 2)))))))
+        (sqrt ((mean-matrix m n) (expt (- t m) 2)))))))
 
 ; normalization
 ; (list n d_model) -> (list n d_model)
@@ -55,131 +63,63 @@
 
 ; (list h n dv) -> (list n (* h dv))
 
-; append-vectors
-; (list x) (list y) -> (list (+ x y))
+#| (define tensor-drop vector-drop) |#
+#| (define tensor-take vector-take) |#
+#| (define tensor-append vector-append) |#
+
+#| ; append-vectors-1-1 |#
+#| ; (list x) (list y) -> (list (+ x y)) |#
 #| (define append-vectors-1-1 |#
-#|   (lambda (u v) |#
-#|     (let ([lu (tlen u)] |#
-#|           [lv (tlen v)]) |#
-#|       (reshape |#
-#|         (list (+-ρ lu lv)) |#
-#|         (list->tensor (list u v)))))) |#
+#|   (prim2 |#
+#|     (lambda (u v) |#
+#|       (tensor-append u v)) |#
+#|     (lambda (ra rb z) |#
+#|         (values |#
+#|           (tensor-take z (tlen ra)) |#
+#|           (tensor-drop z (tlen ra)))))) |#
 
-#| (append-vectors-1-1 [tensor 1 2 3 4 5 11 12 13 14 15] [tensor 6 7 8 9 10 16 17 18 19 20]) |#
+#| (define append-vectors |#
+#|   (ext2 append-vectors-1-1 1 1)) |#
 
-; swap the items at position i and j in list l
-(define list-swap
-  (lambda (l i j)
-    (let ([x (list-ref l i)]
-          [y (list-ref l j)])
-      (list-set
-        (list-set l i y)
-        j x))))
+; takes a tensor of tensors
+; and concatenates them along the vectors
+; TODO: verify that works correctly even when there is a batch dimension
+(define concat-vectors
+  (lambda (t)
+    (concat-vectors-helper t 1 (tref t 0))))
 
-(define list-remove-index
-  (lambda (l i)
+(define concat-vectors-helper
+  (lambda (t i a)
     (cond
-      [(eqv? i 0) (cdr l)]
-      [else (cons (car l) (list-remove-index (cdr l) (sub1 i)))])))
-
-(define list-set
-  (lambda (l i v)
-    (cond
-      [(eqv? i 0) (cons v (cdr l))]
-      [else (cons (car l) (list-set (cdr l) (sub1 i) v))])))
-
-; takes a tensor list of indices, and goes to the corresponding index.
-(define rtref
-  (lambda (t is)
-    (cond
-      [(null? is) t]
-      [else (rtref (tref t (car is)) (cdr is))])))
-
-; swaps dimensions at i and j in a tensor
-; e.g. (list x y) 0 1 -> (list y x)
-; kind of a generalized transpose
-; I believe it is it's own derivative wrt t as well
-(define swap-dims-base
-  (lambda (t i j)
-    (build-tensor
-      (list-swap (shape t) i j)
-      (lambda (p)
-        (rtref t (list-swap p i j))))))
-
-; I believe this is the differentiable version of swap-dims
-(define swap-dims
-  (lambda (i j)
-    (prim1
-      (lambda (t) (swap-dims-base t i j))
-      (lambda (ra z)
-        (swap-dims-base z i j)))))
-
-; I believe this is a differentiable version of reshape
-; does using this reshape get things working for flat and nested tensors? looks like it I think.
-; flat would need to be different because uses a different reshape
-(define d-reshape
-  (lambda (s)
-    (prim1
-      (lambda (t) (reshape s t))
-      (lambda (ra z)
-        (reshape (shape ra) z)))))
-
-; move-dims
-; moves dimension i to dimension j where i <= j
-; preserving order of other dimensions
-(define move-dims
-  (lambda (i j)
-    (lambda (t)
-      (cond
-        [(eqv? i j) t]
-        [else
-          ((move-dims (add1 i) j)
-            (swap-dims i (add1 i) t))]))))
-
-; concat-shape
-; returns the appropriate shape for after a concatenation
-; to be passed to the reshape within concat
-(define concat-shape
-  (lambda (c d)
-    (lambda (s)
-      (list-remove-index
-        (list-set s d (*-ρ (ref s c) (ref s d)))
-        c))))
-
-; concat
-; this implementation is nice because it is general, but might be too slow
-; in which case a concat-vectors over a list might be better
-; concat-vectors is also probably easier to explain
-(define concat
-  (lambda (c d)
-    (lambda (t)
-      ((d-reshape ((concat-shape c d) (shape t)))
-       ((move-dims c (sub1 d)) t)))))
-
-((concat 0 1) (tensor (tensor 1 2) (tensor 3 4) (tensor 5 6)))
+      [(eqv? i (tlen t)) a]
+      [else
+        (concat-vectors-helper t (add1 i) (concat a (tref t i)))])))
 
 ; ATTENTION
 
 ; softmax not as a layer function
 ; (list x) -> (list x)
-(define softmax-f-1
+(define softmax-f
   (lambda (t)
     (let ((z (- t (max t))))
       (let ((expz (exp z)))
         (/ expz (sum expz))))))
 
-(define softmax-f
-  (ext1 softmax-f-1 1))
+#| (define softmax-f |#
+     #|   (ext1 softmax-f-1 1)) |#
 
 #| ; attention |#
 #| ; (list n dk) (list n dk) (list n dv) -> (list n dv) |#
 #| ; works with vector q as well, easier to conceptualize: (list dk) (list n dk) (list n dv) -> (list dv) |#
 #| (define attention |#
-#|   (lambda (Q K V) |#
-#|     (sum-cols (*-2-1 V |#
-#|         (softmax (/ |#
-#|                    (dot-product-2-1 K Q) |#
-#|                    (sqrt (vlen Q)))))))) |#
+     #|   (lambda (Q K V) |#
+            #|     (sum-cols (*-2-1 V |#
+                                    #|         (softmax (/ |#
+                                                           #|                    (dot-product-2-1 K Q) |#
+                                                           #|                    (sqrt (vlen Q)))))))) |#
+
+; for some reason the malt-provided version doesn't seem to work. Seems to be an ext2 1 1 for some reason, not sure why
+(define *-2-1 (ext2 * 2 1))
 
 ; attention
 ; (list n d_k) (list n d_k) (list n d_v) -> (list n d_v)
@@ -252,6 +192,10 @@
 ; then parallel-block θ should be of the form (list (list h a...) (list h b...))
 ; so that each invocation of b's block-fn is vectorized h times
 
+; block fn should duplicate t b times
+
+; in the context of attention
+
 ; parallelize-shape-list
 ; takes a shape list and prepends each shape with a number h
 ; this should make a function called with this list be repeated h times
@@ -264,6 +208,22 @@
           (cons h (car s))
           (parallelize-shape-list (cdr s) h))])))
 
+; nlicate-tensor
+; h and tensor with (shape t) -> tensor with shape (cons h (shape t))
+(define nlicate-tensor
+  (lambda (n)
+    (lambda (t)
+      #| (list->tensor (ρ (nlicate-tensor-helper n (ρ t) '()))) |#
+      (list->tensor (nlicate-tensor-helper n t '())))))
+
+(define nlicate-tensor-helper
+  (lambda (n t a)
+    (cond
+      [(eqv? n 0) a]
+      [else (nlicate-tensor-helper (sub1 n) t (cons t a))])))
+
+; (tensor (tensor 1 2 3)) (tensor (tensor 4 5 6)) -> (tensor (tensor 1 2 3) (tensor 4 5 6))
+
 ; parallel-block
 ; takes in a block and a number h
 ; and returns a tensor of size h,
@@ -271,13 +231,40 @@
 (define parallel-block
   (lambda (b h)
     (block
-      (block-fn b)
+      (lambda (t)
+        (lambda (θ)
+          (((block-fn b) ((nlicate-tensor h) t)) θ)))
       (parallelize-shape-list
         (block-ls b)
         h))))
 
+#| (define parallel-block |#
+#|   (lambda (b h) |#
+#|     (block |#
+#|       (block-fn b) |#
+#|       (parallelize-shape-list (block-ls b) h)))) |#
+
+; concat-vectors-block
+; block takes in a tensor of (shape h n dv)
+; returns a tensor of shape (n (* h dv))
+(define concat-vectors-block
+  (lambda ()
+    (block
+      (lambda (t)
+        (lambda (θ)
+          (concat-vectors t)))
+      (list))))
+
 ; BLOCKS
-; TODO: fill out blocks
+
+; skip block
+(define skip-block
+  (lambda (b)
+    (block
+      (lambda (t)
+        (lambda (theta)
+          (+ t (((block-fn b) t) theta))))
+      (block-ls b))))
 
 ; embedding block
 ; (list n N) -> (list n d_model)
@@ -286,10 +273,8 @@
     (block
       (lambda (t)
         (lambda (θ)
-          (linear
-            (ref θ 0)
-            (zero-tensor (list d_model))))
-      (list (list d_model N))))))
+          (dot-product-2-1 (ref θ 0) t)))
+      (list (list d_model N)))))
 
 ; positional encoding block for learned positional encoding
 ; (list n d_model) -> (list n d_model)
@@ -323,10 +308,15 @@
 ; like a relu/dense block but without the rectification
 (define linear-block
   (lambda (n m)
-    (block linear
+    (block
+      (lambda (t)
+        (lambda (theta)
+          ((linear t) theta)))
       (list
         (list m n)
         (list m)))))
+
+; might need to swap d_model and d_k
 
 ; single attention block
 (define attention-block
@@ -356,7 +346,27 @@
 
 ; mutli-head attention block
 ; (list n d_model) -> (list n d_model)
-; TODO (requires concatenation)
+(define multi-head-attention-block
+  (lambda (d_model d_k d_v h)
+    (stack-blocks
+      (list 
+        (parallel-block
+          (attention-block d_model d_k d_v)
+          h)
+        (concat-vectors-block)
+        (linear-block d_model (*-ρ h d_v))))))
+
+; maked multi-head attention block
+; (list n d_model) -> (list n d_model)
+(define masked-multi-head-attention-block
+  (lambda (n d_model d_k d_v h)
+    (stack-blocks
+      (list
+        (parallel-block
+          (masked-attention-block n d_model d_k d_v)
+          h)
+        (concat-vectors-block)
+        (linear-block d_model (*-ρ h d_v))))))
 
 ; feedforward block
 ; this is the second part of the transformer block
@@ -368,10 +378,17 @@
         (linear-block d_model d_model)))))
 
 ; transformer block
-; (list n d_model) -> (list n d_model)
-; this is the thing repeated multiple times in the paper, with the grey fill
-; depends on multi head attention block and feedforward block (which is just relu followd by linear)
-; TODO (requires multi-head attention block)
+; repeat this 12 times to make gpt-3!
+(define transformer-block
+  (lambda (n d_model d_k d_v h)
+    (stack-blocks
+      (list
+        (skip-block
+          (masked-multi-head-attention-block n d_model d_k d_v h))
+        (normalize-block n d_model)
+        (skip-block
+          (feedforward-block d_model))
+        (normalize-block n d_model)))))
 
 ; softmax block
 ; (list n N) -> (list n N)
@@ -380,3 +397,65 @@
     (block softmax (list))))
 ; malt-included softmax here, NOT softmax-f
 
+; TRANSFORMER
+
+; here it is!
+; n = 15
+; N = 11
+; d_model = 8
+; d_k = 2
+; d_v = 2
+; h = 4
+; batch size 1 (increase when get things working)
+; repeat 3 times
+(define counter-transformer-network
+  (stack-blocks
+    (list
+      (embedding-block 11 8)
+      (positional-encoding-block 15 8)
+      (transformer-block 15 8 2 2 4)
+      (transformer-block 15 8 2 2 4)
+      (transformer-block 15 8 2 2 4)
+      (linear-block 8 11)
+      (softmax-block))))
+
+; get the data
+(require "data/arithmetic-sequences/arithmetic-sequences.rkt")
+
+; train and test funcs
+
+(define train-counter
+  (λ (network)
+    (with-hypers ; TODO: use grid search
+      ((alpha 0.0005)
+       (revs 1) ; change to 20000
+       (batch-size 1)
+       (mu 0.9)
+       (beta 0.999))
+      (trained-transformer (block-fn network) (block-ls network)))))
+
+(define trained-transformer
+  (λ (transformer theta-shapes)
+    (model transformer
+      (adam-gradient-descent
+        (sampling-obj
+          ((with-recording l2-loss)
+            transformer)
+           sequences-train-xs sequences-train-ys)
+        (init-theta theta-shapes)))))
+
+(define train-and-test-transformer
+  (λ (network)
+    (fprintf (current-error-port) "Accuracy: ~a~%"
+      (accuracy
+        (train-counter network)
+        sequences-test-xs sequences-train-ys))))
+
+; train!
+
+(define product (lambda (l) (foldl (lambda (x y) (* x y)) 1 l)))
+(define sum-l (lambda (l) (foldl (lambda (x y) (+ x y)) 0 l)))
+(sum-l (map product (block-ls counter-transformer-network))) ; with current params should be half the size of morse-fcn
+
+(start-logging)
+(train-and-test-transformer counter-transformer-network)
