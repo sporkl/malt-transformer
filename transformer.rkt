@@ -5,10 +5,6 @@
 ; TODO: looks like batch dim and heads dim are swapped before attention is calculated
 ; might not be an issue, might actually work around potential problem of not concatenating along right dimension
 
-; TODO: figure out why flat-tensors is getting in invalid form (where the shape in the representation is a tensor for some reason)
-; it's the same thing for both flat-tensors and nested-tensors: a dual is being passed to a function that can't handle duals
-; issue is that list->tensor expects list of non-dual tensors
-
 ; n = # of words inputted to the model
 ; N = vocabulary size/length of one-hot-vectors which encode words
 ; d_model = dimension of embedding space for the model in general (outputted from each attention block)
@@ -83,6 +79,9 @@
 ; takes a tensor of tensors
 ; and concatenates them along the vectors
 ; TODO: verify that works correctly even when there is a batch dimension
+
+; attempt to define this as a prim
+
 (define concat-vectors
   (lambda (t)
     (concat-vectors-helper t 1 (tref t 0))))
@@ -210,12 +209,12 @@
 ; nlicate-tensor
 ; h and tensor with (shape t) -> tensor with shape (cons h (shape t))
 (define nlicate-tensor
-  (lambda (n)
+  (lambda (n r)
     (lambda (t)
       (let* ([st (shape t)]
              [wt (reshape (cons 1 st) t)])
       (nlicate-tensor-helper
-        (sub1 n) wt (concat-n (rank wt)) wt)))))
+        (sub1 n) wt (concat-n r) wt)))))
 
 (define nlicate-tensor-helper
   (lambda (n t cf a)
@@ -229,12 +228,13 @@
 ; takes in a block and a number h
 ; and returns a tensor of size h,
 ; where each member of that tensor is a different result of running the block on the input
+
 (define parallel-block
-  (lambda (b h)
+  (lambda (b h r)
     (block
       (lambda (t)
         (lambda (θ)
-          (((block-fn b) ((nlicate-tensor h) t)) θ)))
+          (((block-fn b) ((nlicate-tensor h r) t)) θ)))
       (parallelize-shape-list
         (block-ls b)
         h))))
@@ -248,15 +248,26 @@
 ; concat-vectors-block
 ; block takes in a tensor of (shape h n dv)
 ; returns a tensor of shape (n (* h dv))
+; TODO: get to concat along right dimension
+; Need to extend concat-vectors somehow
+; TODO: figure ou twhere nans are coming from. shouldn't be any
+
 (define concat-vectors-block
   (lambda ()
     (block
       (lambda (t)
         (lambda (θ)
-          (concat-vectors t)))
+          (writeln "concat vectorsing")
+          (writeln (shape t))
+          (writeln t)
+          #| (concat-vectors t) |#
+          ((ext1-ρ concat-vectors 2) t)
+          ))
       (list))))
 
 ; BLOCKS
+
+; TODO: make sure + for skip block is possible
 
 ; skip block
 (define skip-block
@@ -290,7 +301,10 @@
 ; relu/dense block
 (define dense-block
   (lambda (n m)
-    (block relu
+    (block
+      (lambda (t)
+        (lambda (theta)
+          ((relu t) theta)))
       (list
         (list m n)
         (list m)))))
@@ -343,7 +357,7 @@
       (list 
         (parallel-block
           (attention-block d_model d_k d_v)
-          h)
+          h 3)
         (concat-vectors-block)
         (linear-block d_model (*-ρ h d_v))))))
 
@@ -355,8 +369,10 @@
       (list
         (parallel-block
           (masked-attention-block n d_model d_k d_v)
-          h)
+          h 3)
+        (print-shape-t-block "between parallel masked attention and concat")
         (concat-vectors-block)
+        (print-shape-t-block "between concat and linear ")
         (linear-block d_model (*-ρ h d_v))))))
 
 ; feedforward block
@@ -378,7 +394,7 @@
           (masked-multi-head-attention-block n d_model d_k d_v h))
         (normalize-block n d_model)
         (skip-block
-          (feedforward-block d_model))
+          (feedforward-block d_model)) ; consider using higher dimensionality here
         (normalize-block n d_model)))))
 
 ; softmax block
@@ -386,7 +402,17 @@
 (define softmax-block
   (lambda ()
     (block softmax (list))))
-; malt-included softmax here, NOT softmax-f
+; malt-included softmax layer here, NOT softmax-f
+
+(define print-shape-t-block
+  (lambda (m)
+    (block
+      (lambda (t)
+        (lambda (theta)
+          (write m)
+          (writeln (shape t))
+          t))
+      (list))))
 
 ; TRANSFORMER
 
