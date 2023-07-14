@@ -2,13 +2,6 @@
 
 (require malt)
 
-; TODO: looks like batch dim and heads dim are swapped before attention is calculated
-; might not be an issue, might actually work around potential problem of not concatenating along right dimension
-
-; TODO: figure out why flat-tensors is getting in invalid form (where the shape in the representation is a tensor for some reason)
-; it's the same thing for both flat-tensors and nested-tensors: a dual is being passed to a function that can't handle duals
-; issue is that list->tensor expects list of non-dual tensors
-
 ; n = # of words inputted to the model
 ; N = vocabulary size/length of one-hot-vectors which encode words
 ; d_model = dimension of embedding space for the model in general (outputted from each attention block)
@@ -57,42 +50,6 @@
       (lambda (θ)
         (let ([n ((normalize m n) t)])
           ((linear n) θ))))))
-
-; CONCATENATION
-
-; (list h n dv) -> (list n (* h dv))
-
-#| (define tensor-drop vector-drop) |#
-#| (define tensor-take vector-take) |#
-#| (define tensor-append vector-append) |#
-
-#| ; append-vectors-1-1 |#
-#| ; (list x) (list y) -> (list (+ x y)) |#
-#| (define append-vectors-1-1 |#
-#|   (prim2 |#
-#|     (lambda (u v) |#
-#|       (tensor-append u v)) |#
-#|     (lambda (ra rb z) |#
-#|         (values |#
-#|           (tensor-take z (tlen ra)) |#
-#|           (tensor-drop z (tlen ra)))))) |#
-
-#| (define append-vectors |#
-#|   (ext2 append-vectors-1-1 1 1)) |#
-
-; takes a tensor of tensors
-; and concatenates them along the vectors
-; TODO: verify that works correctly even when there is a batch dimension
-(define concat-vectors
-  (lambda (t)
-    (concat-vectors-helper t 1 (tref t 0))))
-
-(define concat-vectors-helper
-  (lambda (t i a)
-    (cond
-      [(eqv? i (tlen t)) a]
-      [else
-        (concat-vectors-helper t (add1 i) (concat a (tref t i)))])))
 
 ; ATTENTION
 
