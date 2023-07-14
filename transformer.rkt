@@ -182,79 +182,70 @@
            [V ((linear t) (refr θ 4))])
           ((masked-attention n d_k) Q K V))))))
 
-; PARALLEL BLOCK
-; runs the same block h times in parallel
-; concatenation handled seperately
+; PARALLEL CONCAT BLOCK
+; runs the same block h times in parallel. concatenates result along vectors
 
-; given block b and parallization h
-; if b takes a θ of the form (list (list a...) (list b...))
-; then parallel-block θ should be of the form (list (list h a...) (list h b...))
-; so that each invocation of b's block-fn is vectorized h times
+; concats a list of tensors along the vectors
+(define concat-along-vectors
+  (lambda (ts)
+    (concat-along-vectors-helper (cdr ts) (car ts))))
 
-; block fn should duplicate t b times
-
-; in the context of attention
-
-; parallelize-shape-list
-; takes a shape list and prepends each shape with a number h
-; this should make a function called with this list be repeated h times
-(define parallelize-shape-list
-  (lambda (s h)
+(define concat-along-vectors-helper
+  (lambda (ts a)
     (cond
-      [(null? s) '()]
+      [(null? ts) a]
       [else
-        (cons
-          (cons h (car s))
-          (parallelize-shape-list (cdr s) h))])))
+        (concat-along-vectors-helper
+          (cdr ts)
+          (concat (car ts) a))])))
 
-; nlicate-tensor
-; h and tensor with (shape t) -> tensor with shape (cons h (shape t))
-(define nlicate-tensor
-  (lambda (n)
+; repeats x n times in a list
+(define repeat
+  (lambda (x n)
+    (build-list
+      n
+      (lambda (_) x))))
+
+; repeats a list l n times
+
+(define repeat-list
+  (lambda (l n)
+    (apply append (repeat l n))))
+
+; parallel layer
+
+(define parallel-concat-layer
+  (lambda (b h)
     (lambda (t)
-      (let* ([st (shape t)]
-             [wt (reshape (cons 1 st) t)])
-      (nlicate-tensor-helper
-        (sub1 n) wt (concat-n (rank wt)) wt)))))
+      (lambda (theta)
+        (concat-along-vectors
+          (map-block
+            b
+            (repeat t h)
+            theta
+            '()))))))
 
-(define nlicate-tensor-helper
-  (lambda (n t cf a)
+; maps a block b over list of tensors ts using corresponding parameters in theta. (len theta) = (* (len (block-ls b)) (len ts))
+(define map-block
+  (lambda (b ts theta a)
     (cond
-      [(eqv? n 0) a]
+      [(null? ts) a]
       [else
-        (nlicate-tensor-helper
-          (sub1 n) t cf (cf t a))])))
+        (map-block
+          b
+          (cdr ts)
+          (refr theta (len (block-ls b)))
+          (cons
+            (((block-fn b) (car ts)) theta)
+            a))])))
 
-; parallel-block
-; takes in a block and a number h
-; and returns a tensor of size h,
-; where each member of that tensor is a different result of running the block on the input
-(define parallel-block
+; parallel block
+
+(define parallel-concat-block
   (lambda (b h)
     (block
-      (lambda (t)
-        (lambda (θ)
-          (((block-fn b) ((nlicate-tensor h) t)) θ)))
-      (parallelize-shape-list
-        (block-ls b)
-        h))))
-
-#| (define parallel-block |#
-#|   (lambda (b h) |#
-#|     (block |#
-#|       (block-fn b) |#
-#|       (parallelize-shape-list (block-ls b) h)))) |#
-
-; concat-vectors-block
-; block takes in a tensor of (shape h n dv)
-; returns a tensor of shape (n (* h dv))
-(define concat-vectors-block
-  (lambda ()
-    (block
-      (lambda (t)
-        (lambda (θ)
-          (concat-vectors t)))
-      (list))))
+      (parallel-concat-layer b h)
+      (repeat-list (block-ls b) h))))
 
 ; BLOCKS
 
@@ -341,10 +332,9 @@
   (lambda (d_model d_k d_v h)
     (stack-blocks
       (list 
-        (parallel-block
+        (parallel-concat-block
           (attention-block d_model d_k d_v)
           h)
-        (concat-vectors-block)
         (linear-block d_model (*-ρ h d_v))))))
 
 ; maked multi-head attention block
@@ -353,10 +343,9 @@
   (lambda (n d_model d_k d_v h)
     (stack-blocks
       (list
-        (parallel-block
+        (parallel-concat-block
           (masked-attention-block n d_model d_k d_v)
           h)
-        (concat-vectors-block)
         (linear-block d_model (*-ρ h d_v))))))
 
 ; feedforward block
