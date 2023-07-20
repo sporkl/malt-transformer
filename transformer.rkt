@@ -388,6 +388,10 @@
         (train-counter network)
         sequences-test-xs sequences-train-ys))))
 
+(define test-transformer
+  (lambda (network)
+    (accuracy network sequences-test-xs sequences-test-ys)))
+
 ; train!
 
 (define product (lambda (l) (foldl (lambda (x y) (* x y)) 1 l)))
@@ -395,4 +399,8 @@
 (sum-l (map product (block-ls counter-transformer-network))) ; with current params should be half the size of morse-fcn
 
 (start-logging)
-(train-and-test-transformer counter-transformer-network)
+#| (train-and-test-transformer counter-transformer-network) |#
+(test-transformer
+  (model
+    (block-fn counter-transformer-network)
+    (init-theta (block-ls counter-transformer-network))))
