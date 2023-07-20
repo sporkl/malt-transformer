@@ -320,8 +320,13 @@
   (lambda (n d_model d_k d_v h)
     (stack-blocks
       (list
+        #| (skip-block |#
+        #|   (masked-multi-head-attention-block n d_model d_k d_v h)) |# ; TODO: switch back to this. error comes from elsewhere
         (skip-block
-          (masked-multi-head-attention-block n d_model d_k d_v h))
+          (stack-blocks
+            (list
+              (masked-attention-block n d_model d_k d_v)
+              (linear-block d_v d_model))))
         (normalize-block n d_model)
         (skip-block
           (feedforward-block d_model))
@@ -333,6 +338,16 @@
   (lambda ()
     (block softmax (list))))
 ; malt-included softmax here, NOT softmax-f
+
+(define log-block
+  (lambda (m)
+    (block
+      (lambda (t)
+        (lambda (theta)
+          (writeln (shape t))
+          (writeln m)
+          t))
+      (list))))
 
 ; TRANSFORMER
 
@@ -399,8 +414,9 @@
 (sum-l (map product (block-ls counter-transformer-network))) ; with current params should be half the size of morse-fcn
 
 (start-logging)
-#| (train-and-test-transformer counter-transformer-network) |#
-(test-transformer
-  (model
-    (block-fn counter-transformer-network)
-    (init-theta (block-ls counter-transformer-network))))
+(train-and-test-transformer counter-transformer-network)
+
+#| (test-transformer |#
+#|   (model |#
+#|     (block-fn counter-transformer-network) |#
+#|     (init-theta (block-ls counter-transformer-network)))) |#
