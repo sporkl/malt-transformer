@@ -366,8 +366,8 @@
       (linear-block 11 8)
       (positional-encoding-block 15 8)
       (transformer-block 15 8 2 2 4)
-      (transformer-block 15 8 2 2 4)
-      (transformer-block 15 8 2 2 4)
+      #| (transformer-block 15 8 2 2 4) |#
+      #| (transformer-block 15 8 2 2 4) |#
       (linear-block 8 11)
       (softmax-block))))
 
@@ -401,7 +401,7 @@
     (fprintf (current-error-port) "Accuracy: ~a~%"
       (accuracy
         (train-counter network)
-        sequences-test-xs sequences-train-ys))))
+        sequences-test-xs sequences-test-ys))))
 
 (define test-transformer
   (lambda (network)

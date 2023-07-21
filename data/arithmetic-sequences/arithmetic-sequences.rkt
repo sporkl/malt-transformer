@@ -122,8 +122,6 @@
 (define train-sequences
   (remove* test-sequences pair-x-y-sequences))
 
-; list->tensor might not be supposed to be here?
-
 (define sequences-test-xs
   (list->tensor
     (map
