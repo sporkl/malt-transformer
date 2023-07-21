@@ -10,6 +10,35 @@
 ; h = # heads per multi-head-attention block
 ; x, y, z = misc. variables
 
+; DROPOUT
+
+(require math/distributions)
+
+(define dropout-0
+  (λ (p)
+    (let ((s (distribution-sample (bernoulli-dist p))))
+      (λ (t)
+        (s)))))
+
+(define dropout
+  (λ (p)
+    (let ((scale (/ 1.0 p))
+          (s* (ext1 (dropout-0 p) 0)))
+      (λ (t)
+        (λ (θ)
+          (* scale (* (s* t) t)))))))
+
+(define dropout-block
+  (λ (p)
+    (block
+      (dropout p)
+      (list))))
+
+; dropout should go right after mha and feedforward (before layernorm)
+; and right before values calculation in attention
+
+; note: b/c dropout doesn't use any thetas, can provide another network without dropout blocks and is theta-compatible
+
 ; LAYER NORMALIZATION
 
 ; sum-matrix
@@ -111,7 +140,9 @@
              [processed-scores
                (softmax-f
                  (/ masked-scores (sqrt d_k)))]
-             [vals (*-2-1 V #|processed-|#scores)])
+             [vals (*-2-1 V processed-scores)]
+             ; DROPOUT GOES HERE
+             )
         (sum-cols vals)))))
 
 ; attention layer function
@@ -321,9 +352,11 @@
       (list
         (skip-block
           (masked-multi-head-attention-block n d_model d_k d_v h))
+        ; DROPOUT GOES HERE
         (normalize-block n d_model)
         (skip-block
           (feedforward-block d_model))
+        ; DROPOUT GOES HERE
         (normalize-block n d_model)))))
 
 ; softmax block
@@ -353,6 +386,7 @@
 ; d_v = 2
 ; h = 4
 ; batch size 1 (increase when get things working)
+; dropout (p) = 0.2
 ; repeat 3 times
 (define counter-transformer-network
   (stack-blocks
