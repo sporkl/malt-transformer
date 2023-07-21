@@ -102,19 +102,23 @@
             [(> x y) -inf.0]
             [else 1]))))))
 
+; ERROR IS STEMMING FROM HERE! either scores, vals, or sum-cols
+
 ; attention with masking
 ; (list n d_k) (list n d_k) (list n d_v) -> (list n d_v)
 (define masked-attention
   (lambda (n d_k)
     (lambda (Q K V)
-      (let* ([scores (dot-product-2-1 K Q)]
-             [masked-scores
-               (* scores
-                  (make-future-mask n))]
-             [processed-scores
-               (softmax-f
-                 (/ masked-scores (sqrt d_k)))]
-             [vals (*-2-1 V processed-scores)])
+      (let* (
+             [scores (dot-product-2-1 K Q)]
+             #| [masked-scores |#
+             #|   (* scores |#
+             #|      (make-future-mask n))] |#
+             #| [processed-scores |#
+             #|   (softmax-f |#
+             #|     (/ masked-scores (sqrt d_k)))] |#
+             [vals (*-2-1 V #|processed-|#scores)] ; THIS LINE IS THE SOURCE OF THE ERROR IN BACKPROP!
+             )
         (sum-cols vals)))))
 
 ; attention layer function
@@ -327,10 +331,11 @@
             (list
               (masked-attention-block n d_model d_k d_v)
               (linear-block d_v d_model))))
-        (normalize-block n d_model)
-        (skip-block
-          (feedforward-block d_model))
-        (normalize-block n d_model)))))
+        #| (normalize-block n d_model) |#
+        #| (skip-block |#
+        #|   (feedforward-block d_model)) |#
+        #| (normalize-block n d_model) |#
+        ))))
 
 ; softmax block
 ; (list n N) -> (list n N)
