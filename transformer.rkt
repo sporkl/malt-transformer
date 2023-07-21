@@ -30,17 +30,17 @@
 (define stddev-matrix
   (lambda (m n)
     (lambda (t)
-      (let ([m ((mean-matrix m n) t)])
-        (sqrt ((mean-matrix m n) (expt (- t m) 2)))))))
+      (let ([u ((mean-matrix m n) t)])
+        (sqrt ((mean-matrix m n) (expt (- t u) 2)))))))
 
 ; normalization
 ; (list n d_model) -> (list n d_model)
 (define normalize
   (lambda (m n)
     (lambda (t)
-      (let ([m ((mean-matrix m n) t)]
+      (let ([u ((mean-matrix m n) t)]
             [σ ((stddev-matrix m n) t)])
-        (/ (- t m) σ)))))
+        (/ (- t u) σ)))))
 
 ; normalization as a layer function
 ; this includes shift and scale after, as in the paper
@@ -74,9 +74,6 @@
                                                            #|                    (dot-product-2-1 K Q) |#
                                                            #|                    (sqrt (vlen Q)))))))) |#
 
-; for some reason the malt-provided version doesn't seem to work. Seems to be an ext2 1 1 for some reason, not sure why
-(define *-2-1 (ext2 * 2 1))
-
 ; attention
 ; (list n d_k) (list n d_k) (list n d_v) -> (list n d_v)
 ; should work with vector q as well, easier to conceptualize: (list d_k) (list n d_k) (list n d_v) -> (list d_v)
@@ -102,23 +99,19 @@
             [(> x y) -inf.0]
             [else 1]))))))
 
-; ERROR IS STEMMING FROM HERE! either scores, vals, or sum-cols
-
 ; attention with masking
 ; (list n d_k) (list n d_k) (list n d_v) -> (list n d_v)
 (define masked-attention
   (lambda (n d_k)
     (lambda (Q K V)
-      (let* (
-             [scores (dot-product-2-1 K Q)]
-             #| [masked-scores |#
-             #|   (* scores |#
-             #|      (make-future-mask n))] |#
-             #| [processed-scores |#
-             #|   (softmax-f |#
-             #|     (/ masked-scores (sqrt d_k)))] |#
-             [vals (*-2-1 V #|processed-|#scores)] ; THIS LINE IS THE SOURCE OF THE ERROR IN BACKPROP!
-             )
+      (let* ([scores (dot-product-2-1 K Q)]
+             [masked-scores
+               (* scores
+                  (make-future-mask n))]
+             [processed-scores
+               (softmax-f
+                 (/ masked-scores (sqrt d_k)))]
+             [vals (*-2-1 V #|processed-|#scores)])
         (sum-cols vals)))))
 
 ; attention layer function
@@ -201,6 +194,8 @@
             a))])))
 
 ; parallel block
+
+; TODO: switch back to tensor-based parallel approach
 
 (define parallel-concat-block
   (lambda (b h)
@@ -324,18 +319,12 @@
   (lambda (n d_model d_k d_v h)
     (stack-blocks
       (list
-        #| (skip-block |#
-        #|   (masked-multi-head-attention-block n d_model d_k d_v h)) |# ; TODO: switch back to this. error comes from elsewhere
         (skip-block
-          (stack-blocks
-            (list
-              (masked-attention-block n d_model d_k d_v)
-              (linear-block d_v d_model))))
-        #| (normalize-block n d_model) |#
-        #| (skip-block |#
-        #|   (feedforward-block d_model)) |#
-        #| (normalize-block n d_model) |#
-        ))))
+          (masked-multi-head-attention-block n d_model d_k d_v h))
+        (normalize-block n d_model)
+        (skip-block
+          (feedforward-block d_model))
+        (normalize-block n d_model)))))
 
 ; softmax block
 ; (list n N) -> (list n N)
