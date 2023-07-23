@@ -3,8 +3,8 @@
 (require malt/base-no-overrides)
 (require racket/random)
 
-(define n 15)
-(define N 11)
+(define n 8) ; context length
+(define N 11) ; number of unique charcters
 
 ; generates an arithmetic sequence starting at start, stepping by step, and of size size.
 (define generate-arithmetic-sequence
@@ -19,7 +19,7 @@
                 (sub1 size)))])))
 
 (define sequence-definitions
- (cartesian-product '(0 1 2 3 5 7 11) (range 100) '(10)))
+ (cartesian-product '(0 1 2 3 5 7 11) (range 10) '(10)))
 
 (define sequence-fragments
   (map

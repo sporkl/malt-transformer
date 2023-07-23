@@ -4,7 +4,22 @@
 ; by Dmitri Volkov
 ; Implements a decoder-only transformer
 
+; TODO: consider change *-ρ to *-0-0
+
 (require malt)
+
+; LOG BLOCK
+
+; useful for debugging
+
+(define log-block
+  (lambda (f) ; f should take t as argument
+    (block
+      (lambda (t)
+        (lambda (theta)
+          (writeln (f t))
+          t))
+      (list))))
 
 ; STANDARD BLOCKS
 
@@ -70,8 +85,6 @@
 
 ; PARALLEL CONCAT
 
-; consider switching back to tensor-based parallel approach
-
 (define concat-along-vectors
   (lambda (ts)
     (concat-along-vectors-helper (cdr ts) (car ts))))
@@ -123,7 +136,7 @@
             theta
             '()))))))
 
-; parallel block
+; parallel-concat block
 (define parallel-concat-block
   (lambda (b h)
     (block
@@ -167,9 +180,9 @@
 (define normalize-layer
   (lambda (m n)
     (lambda (t)
-      (lambda (θ)
+      (lambda (theta)
         (let ([n ((normalize m n) t)])
-          ((linear n) θ))))))
+          ((linear n) theta))))))
 
 (define normalize-block
   (lambda (n d_model)
@@ -196,14 +209,14 @@
               [y (ref p 0)])
           (cond
             [(> x y) -inf.0]
-            [else 1]))))))
+            [else 0]))))))
 
 (define masked-attention
   (lambda (n d_k)
     (lambda (Q K V)
       (let* ([scores (dot-product-2-1 K Q)]
              [masked-scores
-               (* scores
+               (+ scores
                   (make-future-mask n))]
              [processed-scores
                (softmax-f
@@ -214,11 +227,11 @@
 (define masked-attention-layer
   (lambda (n d_k)
     (lambda (t)
-      (lambda (θ)
+      (lambda (theta)
         (let
-          ([Q ((linear t) θ)]
-           [K ((linear t) (refr θ 2))]
-           [V ((linear t) (refr θ 4))])
+          ([Q ((linear t) theta)]
+           [K ((linear t) (refr theta 2))]
+           [V ((linear t) (refr theta 4))])
           ((masked-attention n d_k) Q K V))))))
 
 (define masked-attention-block
@@ -242,7 +255,8 @@
         (parallel-concat-block
           (masked-attention-block n d_model d_k d_v)
           h)
-        (linear-block d_model (*-ρ h d_v))))))
+        (linear-block (*-ρ h d_v) d_model)
+        ))))
 
 ; TRANSFORMER
 
@@ -280,7 +294,8 @@
         (normalize-block n d_model)
         (skip-block
           (feedforward-block d_model))
-        (normalize-block n d_model)))))
+        (normalize-block n d_model)
+        ))))
 
 ; POSITIONAL ENCODING
 
@@ -290,9 +305,31 @@
   (lambda (n d_model)
     (block
       (lambda (t)
-        (lambda (θ)
-          (+ t (ref θ 0))))
+        (lambda (theta)
+          (+ t (ref theta 0))))
       (list (list n d_model)))))
+
+; RESHAPE BLOCK
+
+(define d-reshape
+  (lambda (s)
+    (prim1
+      (lambda (t) (reshape s t))
+      (lambda (ra z)
+        (reshape (shape ra) z))
+      (lambda (os) s))))
+
+(define reshape-layer
+  (lambda (r s)
+    (lambda (t)
+      (lambda (theta)
+        ((ext1 (d-reshape s) r) t)))))
+
+(define reshape-block
+  (lambda (r s)
+    (block
+      (reshape-layer r s)
+      (list))))
 
 ; TRANSFORMER ARCHITECTURE
 
@@ -318,6 +355,7 @@
         (repeat-block
           (transformer-block-with-dropout n d_model d_k d_v h)
           r)
+        (reshape-block 2 (list (*-ρ d_model n)))
         (linear-block d_model N)
         (softmax-block)))))
 
@@ -330,8 +368,10 @@
         (repeat-block
           (transformer-block n d_model d_k d_v h)
           r)
-        (linear-block d_model N)
-        (softmax-block)))))
+        (reshape-block 2 (list (*-ρ d_model n))) ; this might be wrong, might need to change linear block below
+        (linear-block d_model N) ; seems to work but not sure how with dimensionality of last output
+        (softmax-block)
+        ))))
 
 ; TRAINING AND TESTING
 
@@ -348,34 +388,66 @@
 
 ; just use accuracy to test
 
-; n = 15
+; n = 8
 ; N = 11
-; d_model = 8
+; d_model = 3
 ; d_k = 2
 ; d_v = 2
-; h = 4
-; r = 3
+; h = 2
+; r = 1
 
-(define counter-for-training
-  (transformer-network-with-dropout 15 11 8 2 2 4 3))
+; use this for training once flat-tensors dropout works
+#| (define counter-for-training |#
+#|   (transformer-network-with-dropout 15 11 3 2 2 3 1)) |#
 
 (define counter
-  (transformer-network 15 11 8 2 2 4 3))
+  (transformer-network 8 11 3 2 2 2 2))
 
 ; get the data
 (require "data/arithmetic-sequences/arithmetic-sequences.rkt")
 
-(define train-counter
-  (λ ()
-    (with-hypers ; TODO: use grid search
-      ((alpha 0.0005)
-       (revs 1) ; change to 20000
-       (batch-size 1)
+; TODO: why does batch size 8 get nans?
+
+(define find-counter-hypers
+  (lambda ()
+    (grid-search
+      (lambda (a) (> a .5)) ; just need to find something that works a bit, then use more epochs
+      ((revs 100 500 1000 2000 4000 10000)
+       (batch-size 2 4 8)
+       (alpha 0.01 0.005 0.0005 0.0001)
        (mu 0.9)
        (beta 0.999)
-       (p 0.2))
+       (p 0.1)
+       )
+      (writeln (list revs alpha batch-size))
+      (let ((acc
+              (accuracy
+                (train-network
+                  (block-fn counter)
+                  (block-fn counter)
+                  (block-ls counter)
+                  sequences-train-xs sequences-train-ys)
+                sequences-test-xs sequences-test-ys)))
+        (write "Acc: ")
+        (writeln acc)
+        acc)
+      ))
+  )
+
+; tried and cut short with 1 transformer block, but best I got was 0.48 with revs=500, batch size=2, alpha = 0.01
+; I think only having 1 attention block is limiting what it can do.
+
+(define train-counter
+  (lambda ()
+    (with-hypers ; TODO: use grid search
+      ((alpha 0.05)
+       (revs 20) ; change to 20000
+       (batch-size 4)
+       (mu 0.9)
+       (beta 0.999)
+       (p 0.1))
       (train-network
-        (block-fn counter-for-training)
+        (block-fn counter) ; TODO: change to counter-for-training
         (block-fn counter)
         (block-ls counter)
         sequences-train-xs sequences-train-ys))))
@@ -391,5 +463,6 @@
         ; TODO: save theta to disk here
         (test-counter trained-counter)))))
 
-#| (start-logging) |#
-#| (train-and-test-counter) |#
+(start-logging)
+(find-counter-hypers)
+(train-and-test-counter)
