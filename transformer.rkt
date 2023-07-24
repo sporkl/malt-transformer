@@ -44,32 +44,44 @@
     (block softmax (list))))
 
 ; DROPOUT
+; TODO: clean this up to use dropout as hyper
 
 (require math/distributions)
 
 (declare-hyper p) ; p is dropout probability
 
+(define dropout-0-ρ
+  (λ (s)
+    (λ (t)
+      (s))))
+
+(define dropout-0-∇
+  (λ (r z) z))
+
 (define dropout-0
-  (λ (p)
-    (let ((s (distribution-sample (bernoulli-dist p))))
-      (λ (t)
-        (s)))))
+  (λ (prob)
+    (let ((s (distribution-sample (bernoulli-dist prob))))
+      (ext1 (prim1 (dropout-0-ρ s) dropout-0-∇) 0))))
+
+(define dropout-ext1
+  (λ (prob)
+    (λ (t)
+      (let ((noise-generator (dropout-0 prob))
+            (scale (/ 1.0 prob)))
+        (let ((noise (noise-generator t)))
+          (* (*-ρ scale (ρ noise)) t))))))
 
 (define dropout
-  (λ (t)
-    (let ((scale (/ 1.0 p))
-          (s* (ext1 (dropout-0 p) 0)))
-      (* scale (* (s* t) t)))))
-
-(define dropout-layer
-  (lambda (t)
-    (lambda (theta)
-      (dropout t))))
+  (λ (prob)
+    (let ((op (dropout-ext1 prob)))
+      (λ (t)
+        (λ (θ)
+          (op t))))))
 
 (define dropout-block
-  (λ ()
+  (λ (prob)
     (block
-      dropout-layer
+      (dropout prob)
       (list))))
 
 ; SKIP
@@ -228,10 +240,11 @@
   (lambda (n d_k)
     (lambda (t)
       (lambda (theta)
-        (let
+        (let*
           ([Q ((linear t) theta)]
            [K ((linear t) (refr theta 2))]
-           [V ((linear t) (refr theta 4))])
+           [V ((linear t) (refr theta 4))]
+           )
           ((masked-attention n d_k) Q K V))))))
 
 (define masked-attention-block
@@ -278,11 +291,11 @@
       (list
         (skip-block
           (masked-multi-head-attention-block n d_model d_k d_v h))
-        (dropout-block)
+        (dropout-block p)
         (normalize-block n d_model)
         (skip-block
           (feedforward-block d_model))
-        (dropout-block)
+        (dropout-block p)
         (normalize-block n d_model)))))
 
 (define transformer-block
@@ -317,7 +330,8 @@
       (lambda (t) (reshape s t))
       (lambda (ra z)
         (reshape (shape ra) z))
-      (lambda (os) s))))
+      (lambda (os) s)
+      )))
 
 (define reshape-layer
   (lambda (r s)
@@ -364,27 +378,38 @@
     (stack-blocks
       (list
         (linear-block N d_model)
-        (positional-encoding-block n d_model) 
+        (positional-encoding-block n d_model)
         (repeat-block
           (transformer-block n d_model d_k d_v h)
           r)
         (reshape-block 2 (list (*-ρ d_model n))) ; this might be wrong, might need to change linear block below
-        (linear-block d_model N) ; seems to work but not sure how with dimensionality of last output
+        (linear-block d_model N) ; TODO: seems to work but not sure how with dimensionality of last output
         (softmax-block)
         ))))
 
 ; TRAINING AND TESTING
 
+; saves a theta to a filename
+(define print-theta
+  (lambda (theta)
+    (let ((tpl (max-tensor-print-length)))
+      (max-tensor-print-length 0)
+      (if #t (writeln theta) '()) ; change to #f to avoid printing theta
+      (max-tensor-print-length tpl))
+    theta))
+
 ; train a network
 (define train-network
   (lambda (network-for-training network theta-shapes xs ys) ; different train and test architectures to remove dropout
-    (model network
-      (adam-gradient-descent
-        (sampling-obj
-          ((with-recording l2-loss)
-            network-for-training)
-           xs ys)
-        (init-theta theta-shapes)))))
+    (model
+      network
+      (print-theta
+        (adam-gradient-descent
+          (sampling-obj
+            ((with-recording l2-loss)
+             network-for-training)
+            xs ys)
+          (init-theta theta-shapes))))))
 
 ; just use accuracy to test
 
@@ -397,11 +422,13 @@
 ; r = 1
 
 ; use this for training once flat-tensors dropout works
-#| (define counter-for-training |#
-#|   (transformer-network-with-dropout 15 11 3 2 2 3 1)) |#
+(define counter-for-training
+  (lambda () ; needed to prevent from loading dropout probability hyper
+    (transformer-network-with-dropout 8 11 3 2 2 2 1)))
 
 (define counter
-  (transformer-network 8 11 3 2 2 2 2))
+  (lambda ()
+    (transformer-network 8 11 3 2 2 2 1)))
 
 ; get the data
 (require "data/arithmetic-sequences/arithmetic-sequences.rkt")
@@ -423,33 +450,31 @@
       (let ((acc
               (accuracy
                 (train-network
-                  (block-fn counter)
-                  (block-fn counter)
-                  (block-ls counter)
+                  (block-fn (counter-for-training))
+                  (block-fn (counter))
+                  (block-ls (counter))
                   sequences-train-xs sequences-train-ys)
                 sequences-test-xs sequences-test-ys)))
         (write "Acc: ")
         (writeln acc)
-        acc)
-      ))
-  )
+        acc))))
 
-; tried and cut short with 1 transformer block, but best I got was 0.48 with revs=500, batch size=2, alpha = 0.01
+; tried and cut short with 1 transformer block, but best I got was 0.33 with revs=500, batch size=2, alpha = 0.01
 ; I think only having 1 attention block is limiting what it can do.
 
 (define train-counter
   (lambda ()
     (with-hypers ; TODO: use grid search
-      ((alpha 0.05)
-       (revs 20) ; change to 20000
-       (batch-size 4)
+      ((alpha 0.001)
+       (revs 1) ; change to 20000
+       (batch-size 2) ; note: batch-size != context length otherwise + gets confused
        (mu 0.9)
        (beta 0.999)
        (p 0.1))
       (train-network
-        (block-fn counter) ; TODO: change to counter-for-training
-        (block-fn counter)
-        (block-ls counter)
+        (block-fn (counter-for-training)) ; TODO: change to counter-for-training
+        (block-fn (counter))
+        (block-ls (counter))
         sequences-train-xs sequences-train-ys))))
 
 (define test-counter
@@ -464,5 +489,5 @@
         (test-counter trained-counter)))))
 
 (start-logging)
-(find-counter-hypers)
+#| (find-counter-hypers) |#
 (train-and-test-counter)
