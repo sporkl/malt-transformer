@@ -56,7 +56,9 @@ notes:
 
 *Resources:*
 
-https://e2eml.school/transformers.html and all resources linked at botton
+https://e2eml.school/transformers.html
+and all resources linked at botton
 - Attention is All You Need paper
 - Layer Normalization paper
 - GPT-3 paper perhaps? need to cite something for getting rid of encoder side.
+- https://www.evanmiller.org/attention-is-off-by-one.html

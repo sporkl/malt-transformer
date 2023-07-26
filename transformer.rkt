@@ -4,8 +4,6 @@
 ; by Dmitri Volkov
 ; Implements a decoder-only transformer
 
-; TODO: consider change *-ρ to *-0-0
-
 (require malt)
 
 ; LOG BLOCK
@@ -44,7 +42,6 @@
     (block softmax (list))))
 
 ; DROPOUT
-; TODO: clean this up to use dropout as hyper
 
 (require math/distributions)
 
@@ -69,7 +66,7 @@
       (let ((noise-generator (dropout-0 prob))
             (scale (/ 1.0 prob)))
         (let ((noise (noise-generator t)))
-          (* (*-ρ scale (ρ noise)) t))))))
+          (* (* scale noise) t))))))
 
 (define dropout
   (λ (prob)
@@ -206,11 +203,11 @@
 
 ; ATTENTION
 
-(define softmax-f
+(define ghostmax-f
   (lambda (t)
     (let ((z (- t (max t))))
       (let ((expz (exp z)))
-        (/ expz (sum expz))))))
+        (/ expz (+ (sum expz) 1)))))) ; + 1 in denominator is very recent research! theoretically better, but lacking applied evidence
 
 (define make-future-mask
   (lambda (n)
@@ -231,7 +228,7 @@
                (+ scores
                   (make-future-mask n))]
              [processed-scores
-               (softmax-f
+               (ghostmax-f
                  (/ masked-scores (sqrt d_k)))]
              [vals (*-2-1 V processed-scores)]) ; consider add dropout after this line
         (sum-cols vals)))))
@@ -296,7 +293,8 @@
         (skip-block
           (feedforward-block d_model))
         (dropout-block p)
-        (normalize-block n d_model)))))
+        (normalize-block n d_model)
+        ))))
 
 (define transformer-block
   (lambda (n d_model d_k d_v h)
@@ -322,28 +320,32 @@
           (+ t (ref theta 0))))
       (list (list n d_model)))))
 
-; RESHAPE BLOCK
+; TAIL BLOCK
 
-(define d-reshape
-  (lambda (s)
-    (prim1
-      (lambda (t) (reshape s t))
-      (lambda (ra z)
-        (reshape (shape ra) z))
-      (lambda (os) s)
-      )))
+(define make-tail-mask
+  (lambda (h w)
+    (build-tensor
+      (list h w)
+      (lambda (idx)
+        (cond
+          [(= (car idx) (sub1 h)) 1.0]
+          [else 0.0])))))
 
-(define reshape-layer
-  (lambda (r s)
-    (lambda (t)
-      (lambda (theta)
-        ((ext1 (d-reshape s) r) t)))))
+(define d-tail-2
+  (lambda (t)
+    (sum-cols
+      (* t (make-tail-mask (tlen (tref t 0)) (tlen (tref (tref t 0) 0))))))) ; t here includes batch dimension :(
 
-(define reshape-block
-  (lambda (r s)
-    (block
-      (reshape-layer r s)
-      (list))))
+; TODO: d-tail-2 implementation that doesn't require batch dimension. maybe if take 2 arguments at start
+
+(define tail-layer
+  (lambda (t)
+    (lambda (theta)
+      (d-tail-2 t))))
+
+(define tail-block
+  (lambda ()
+    (block tail-layer (list))))
 
 ; TRANSFORMER ARCHITECTURE
 
@@ -369,7 +371,7 @@
         (repeat-block
           (transformer-block-with-dropout n d_model d_k d_v h)
           r)
-        (reshape-block 2 (list (*-ρ d_model n)))
+        (tail-block)
         (linear-block d_model N)
         (softmax-block)))))
 
@@ -382,10 +384,9 @@
         (repeat-block
           (transformer-block n d_model d_k d_v h)
           r)
-        (reshape-block 2 (list (*-ρ d_model n))) ; this might be wrong, might need to change linear block below
-        (linear-block d_model N) ; TODO: seems to work but not sure how with dimensionality of last output
-        (softmax-block)
-        ))))
+        (tail-block)
+        (linear-block d_model N)
+        (softmax-block)))))
 
 ; TRAINING AND TESTING
 
@@ -394,7 +395,7 @@
   (lambda (theta)
     (let ((tpl (max-tensor-print-length)))
       (max-tensor-print-length 0)
-      (if #t (writeln theta) '()) ; change to #f to avoid printing theta
+      (if #f (writeln theta) '()) ; change to #f to avoid printing theta
       (max-tensor-print-length tpl))
     theta))
 
@@ -433,8 +434,6 @@
 ; get the data
 (require "data/arithmetic-sequences/arithmetic-sequences.rkt")
 
-; TODO: why does batch size 8 get nans?
-
 (define find-counter-hypers
   (lambda ()
     (grid-search
@@ -467,12 +466,12 @@
     (with-hypers ; TODO: use grid search
       ((alpha 0.001)
        (revs 1) ; change to 20000
-       (batch-size 2) ; note: batch-size != context length otherwise + gets confused
+       (batch-size 1) ; note: batch-size != context length otherwise + gets confused
        (mu 0.9)
        (beta 0.999)
-       (p 0.1))
+       (p 0.9)) ; opposite of pytorch definition of dropout
       (train-network
-        (block-fn (counter-for-training)) ; TODO: change to counter-for-training
+        (block-fn (counter-for-training))
         (block-fn (counter))
         (block-ls (counter))
         sequences-train-xs sequences-train-ys))))
@@ -485,8 +484,11 @@
   (lambda ()
     (let ((trained-counter (train-counter)))
       (begin
-        ; TODO: save theta to disk here
         (test-counter trained-counter)))))
+
+(max-tensor-print-length 0)
+
+; TODO: have train input a starting theta and output a theta
 
 (start-logging)
 #| (find-counter-hypers) |#
