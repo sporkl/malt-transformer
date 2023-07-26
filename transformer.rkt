@@ -399,20 +399,18 @@
       (max-tensor-print-length tpl))
     theta))
 
-; train a network
+; train a network (takes and returns a theta among other args)
 (define train-network
-  (lambda (network-for-training network theta-shapes xs ys) ; different train and test architectures to remove dropout
-    (model
-      network
-      (print-theta
-        (adam-gradient-descent
-          (sampling-obj
-            ((with-recording l2-loss)
-             network-for-training)
-            xs ys)
-          (init-theta theta-shapes))))))
+  (lambda (network theta xs ys)
+    (adam-gradient-descent
+      (sampling-obj
+        ((with-recording l2-loss)
+         network)
+        xs ys)
+      theta)))
 
-; just use accuracy to test
+; use model to form a function out of 
+; use accuracy to test
 
 ; n = 8
 ; N = 11
@@ -423,11 +421,11 @@
 ; r = 1
 
 ; use this for training once flat-tensors dropout works
-(define counter-for-training
+(define counter-network-for-training
   (lambda () ; needed to prevent from loading dropout probability hyper
     (transformer-network-with-dropout 8 11 3 2 2 2 1)))
 
-(define counter
+(define counter-network
   (lambda ()
     (transformer-network 8 11 3 2 2 2 1)))
 
@@ -448,32 +446,31 @@
       (writeln (list revs alpha batch-size))
       (let ((acc
               (accuracy
-                (train-network
-                  (block-fn (counter-for-training))
-                  (block-fn (counter))
-                  (block-ls (counter))
-                  sequences-train-xs sequences-train-ys)
+                (model
+                  counter-network
+                  (train-network
+                    (block-fn (counter-network-for-training))
+                    (init-theta (block-ls (counter-network-for-training)))
+                    sequences-train-xs sequences-train-ys))
                 sequences-test-xs sequences-test-ys)))
         (write "Acc: ")
         (writeln acc)
         acc))))
 
 ; tried and cut short with 1 transformer block, but best I got was 0.33 with revs=500, batch size=2, alpha = 0.01
-; I think only having 1 attention block is limiting what it can do.
 
 (define train-counter
   (lambda ()
     (with-hypers ; TODO: use grid search
       ((alpha 0.001)
        (revs 1) ; change to 20000
-       (batch-size 1) ; note: batch-size != context length otherwise + gets confused
+       (batch-size 2) ; note: batch-size != context length otherwise + gets confused
        (mu 0.9)
        (beta 0.999)
        (p 0.9)) ; opposite of pytorch definition of dropout
       (train-network
-        (block-fn (counter-for-training))
-        (block-fn (counter))
-        (block-ls (counter))
+        (block-fn (counter-network-for-training))
+        (init-theta (block-ls (counter-network-for-training)))
         sequences-train-xs sequences-train-ys))))
 
 (define test-counter
@@ -482,13 +479,13 @@
 
 (define train-and-test-counter
   (lambda ()
-    (let ((trained-counter (train-counter)))
+    (let ((trained-counter-theta (train-counter)))
       (begin
-        (test-counter trained-counter)))))
-
-(max-tensor-print-length 0)
-
-; TODO: have train input a starting theta and output a theta
+        (let ((pml (max-tensor-print-length)))
+          (max-tensor-print-length 0)
+          (writeln trained-counter-theta)
+          (max-tensor-print-length pml))
+        (test-counter (model (block-fn (counter-network)) trained-counter-theta))))))
 
 (start-logging)
 #| (find-counter-hypers) |#
