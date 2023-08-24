@@ -273,17 +273,17 @@
 ; feedforward block
 ; this is the second part of the transformer block
 (define feedforward-block
-  (lambda (d_model)
+  (lambda (d_model d_ff)
     (stack-blocks
       (list
-        (dense-block d_model d_model)
-        (linear-block d_model d_model)))))
+        (dense-block d_model d_ff)
+        (linear-block d_ff d_model)))))
 
 ; transformer block
 ; repeat this 12 times to make gpt-3!
 
 (define transformer-block-with-dropout
-  (lambda (n d_model d_k d_v h)
+  (lambda (n d_model d_k d_v h d_ff)
     (stack-blocks
       (list
         (skip-block
@@ -291,20 +291,20 @@
         (dropout-block p)
         (normalize-block n d_model)
         (skip-block
-          (feedforward-block d_model))
+          (feedforward-block d_model d_ff))
         (dropout-block p)
         (normalize-block n d_model)
         ))))
 
 (define transformer-block
-  (lambda (n d_model d_k d_v h)
+  (lambda (n d_model d_k d_v h d_ff)
     (stack-blocks
       (list
         (skip-block
           (masked-multi-head-attention-block n d_model d_k d_v h))
         (normalize-block n d_model)
         (skip-block
-          (feedforward-block d_model))
+          (feedforward-block d_model d_ff))
         (normalize-block n d_model)
         ))))
 
@@ -363,26 +363,26 @@
 ; r: number of times to repeat transformer block
 
 (define transformer-network-with-dropout
-  (lambda (n N d_model d_k d_v h r)
+  (lambda (n N d_model d_k d_v h d_ff r)
     (stack-blocks
       (list
         (linear-block N d_model)
         (positional-encoding-block n d_model) 
         (repeat-block
-          (transformer-block-with-dropout n d_model d_k d_v h)
+          (transformer-block-with-dropout n d_model d_k d_v h d_ff)
           r)
         (tail-block)
         (linear-block d_model N)
         (softmax-block)))))
 
 (define transformer-network
-  (lambda (n N d_model d_k d_v h r)
+  (lambda (n N d_model d_k d_v h d_ff r)
     (stack-blocks
       (list
         (linear-block N d_model)
         (positional-encoding-block n d_model)
         (repeat-block
-          (transformer-block n d_model d_k d_v h)
+          (transformer-block n d_model d_k d_v h d_ff)
           r)
         (tail-block)
         (linear-block d_model N)
@@ -418,16 +418,17 @@
 ; d_k = 2
 ; d_v = 2
 ; h = 2
+; d_ff = 3
 ; r = 1
 
 ; use this for training once flat-tensors dropout works
 (define counter-network-for-training
   (lambda () ; needed to prevent from loading dropout probability hyper
-    (transformer-network-with-dropout 8 11 3 2 2 2 1)))
+    (transformer-network-with-dropout 8 11 3 2 2 2 3 1)))
 
 (define counter-network
   (lambda ()
-    (transformer-network 8 11 3 2 2 2 1)))
+    (transformer-network 8 11 3 2 2 2 3 1)))
 
 ; get the data
 (require "data/arithmetic-sequences/arithmetic-sequences.rkt")
@@ -463,7 +464,7 @@
   (lambda ()
     (with-hypers ; TODO: use grid search
       ((alpha 0.001)
-       (revs 1) ; change to 20000
+       (revs 100) ; change to 20000
        (batch-size 2) ; note: batch-size != context length otherwise + gets confused
        (mu 0.9)
        (beta 0.999)
